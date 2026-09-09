@@ -38,6 +38,7 @@ class ProxyInfo:
     country: str = ""
     ip_type: str = ""
     score: Optional[int] = None
+    provider: str = ""
 
 
 @dataclass
@@ -458,7 +459,7 @@ def locate_by_geoip(proxy: dict, reader: database.Reader) -> dict:
             proxy["name"] = country
             proxy["renamed"] = True
         else:
-            logger.warning(f"cannot get geolocation and rename, address: {address}")
+            logger.warning(f"cannot get geolocation and name, address: {address}")
     except Exception as e:
         logger.error(f"query ip geolocation failed, address: {address}, error: {str(e)}")
 
@@ -928,6 +929,7 @@ def check_residential(
 
         if classified:
             try:
+                result.provider = utils.trim(provider)
                 country_code = utils.trim(classified.country_code).upper()
                 if country_code:
                     result.country = ISO_TO_CHINESE.get(country_code, "")
@@ -1116,13 +1118,16 @@ def batch_query(
                 pass
 
 
-def process_query_results(results: list[ProxyQueryResult], strategy: str) -> tuple[list[dict], list[dict]]:
+def process_query_results(
+    results: list[ProxyQueryResult], strategy: str, score: bool = False
+) -> tuple[list[dict], list[dict]]:
     """
     Process proxy query results
 
     Args:
         results: List of query results
         strategy: Processing strategy ('residential' or 'location')
+        score: Whether to prefix node names with provider and trust score
 
     Returns:
         tuple: (list of successful proxies, list of failed proxies)
@@ -1144,17 +1149,17 @@ def process_query_results(results: list[ProxyQueryResult], strategy: str) -> tup
                     name += "家宽"
                 elif item.result.ip_type == "business":
                     name += "商宽"
-
-                proxy["name"] = name
-                successes.append(proxy)
-            elif strategy == "location":
-                # Location check strategy
-                proxy["name"] = item.result.country
-                successes.append(proxy)
             else:
-                # Unknown strategy, use query result directly
-                proxy["name"] = item.result.country
-                successes.append(proxy)
+                # Location check or unknown strategy
+                name = item.result.country
+
+            if score and item.result.score is not None:
+                source = utils.trim(item.result.provider).upper()
+                if source:
+                    name = f"[{source}|{str(item.result.score).zfill(3)}] {name}"
+
+            proxy["name"] = name
+            successes.append(proxy)
         else:
             # Failed query proxies
             fails.append(item.proxy)
@@ -1172,6 +1177,7 @@ def regularize(
     residential: bool = False,
     ip_library: str = "",
     digits: int = 2,
+    score: bool = False,
 ) -> list[dict]:
     if not proxies or not isinstance(proxies, list):
         return proxies
@@ -1199,7 +1205,7 @@ def regularize(
         )
 
         # Process residential check results
-        successes, fails = process_query_results(results, "residential")
+        successes, fails = process_query_results(results, "residential", score=score)
         logger.info(f"Residential check completed: {len(successes)} successful, {len(fails)} failed")
     else:
         fails = proxies
@@ -1253,7 +1259,7 @@ def regularize(
             )
 
             # Process location check results and handle CDN proxies
-            query_successes, query_fails = process_query_results(query_results, "location")
+            query_successes, query_fails = process_query_results(query_results, "location", score=score)
 
             # Add query successes to final results
             successes.extend(query_successes)
